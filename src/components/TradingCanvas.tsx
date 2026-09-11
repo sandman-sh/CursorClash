@@ -36,6 +36,20 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
   const [activeFlagModal, setActiveFlagModal] = useState<TapFlag | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // High-performance mutable refs for the 60fps canvas engine
+  const remoteCursorsRef = useRef<RemoteCursor[]>([]);
+  const mousePosRef = useRef<{ x: number; y: number; price: number; time?: number } | null>(null);
+  const candlesRef = useRef<Candle[]>(candles);
+  const flagsRef = useRef<TapFlag[]>(flags);
+  const currentPriceRef = useRef<number>(currentPrice);
+  const activeProfileRef = useRef(activeProfile);
+
+  // Keep refs in sync synchronously
+  candlesRef.current = candles;
+  flagsRef.current = flags;
+  currentPriceRef.current = currentPrice;
+  activeProfileRef.current = activeProfile;
+
   // Technical chart toggles
   const [showEMA, setShowEMA] = useState(true);
   const [showVolume, setShowVolume] = useState(true);
@@ -126,8 +140,16 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
 
   // Subscribe to real-time multiplayer cursors & flags
   useEffect(() => {
-    const unsubCursors = multiplayerService.subscribeCursors(setRemoteCursors);
+    // Announce presence immediately when canvas mounts
+    multiplayerService.announcePresence();
+
+    const unsubCursors = multiplayerService.subscribeCursors((updatedCursors) => {
+      remoteCursorsRef.current = updatedCursors;
+      setRemoteCursors(updatedCursors);
+    });
+
     const unsubFlags = multiplayerService.subscribeFlags((updatedFlags) => {
+      flagsRef.current = updatedFlags;
       setFlags(updatedFlags);
       const userWin = updatedFlags.find(
         (f) => f.playerId === activeProfile?.address && f.status === 'WIN' && Date.now() - f.timestamp < 3000
@@ -141,6 +163,7 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         });
       }
     });
+
     return () => {
       unsubCursors();
       unsubFlags();
@@ -171,19 +194,21 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
 
       // Detect hovered candle
       const visibleCandles = candles.slice(-45);
+      let candleTime: number | undefined;
       if (visibleCandles.length > 0 && x <= chartW) {
         const spacing = chartW / visibleCandles.length;
         const candleIdx = Math.floor(x / spacing);
         if (candleIdx >= 0 && candleIdx < visibleCandles.length) {
           const hovered = visibleCandles[candleIdx];
           setHoveredCandle(hovered);
-          setMousePos({ x, y, price: priceAtY, time: hovered.timestamp });
-        } else {
-          setMousePos({ x, y, price: priceAtY });
+          candleTime = hovered.timestamp;
         }
-      } else {
-        setMousePos({ x, y, price: priceAtY });
       }
+
+      // Update ref immediately for zero-lag 60fps canvas paint
+      const newPos = { x, y, price: priceAtY, time: candleTime };
+      mousePosRef.current = newPos;
+      setMousePos(newPos);
 
       // Broadcast cursor position (throttled inside multiplayer service)
       const myTabId = multiplayerService.getTabId();
@@ -202,6 +227,7 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
   );
 
   const handleMouseLeave = () => {
+    mousePosRef.current = null;
     setMousePos(null);
     setHoveredCandle(null);
   };
@@ -668,15 +694,19 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
 
       // 7. Render ALL Multiplayer Cursors (local + remote + simulated)
       const myTabId = multiplayerService.getTabId();
-      remoteCursors.forEach((c) => {
+      const allCursors = remoteCursorsRef.current;
+      const currentMouse = mousePosRef.current;
+      const profile = activeProfileRef.current;
+
+      allCursors.forEach((c) => {
         const isLocalTab = c.sessionId === myTabId;
 
         // For the local tab's cursor, use mousePos for pixel-perfect positioning
         // For remote/simulated cursors, use normalized coordinates
         let cx: number, cy: number;
-        if (isLocalTab && mousePos && mousePos.x <= chartW && mousePos.y <= chartH) {
-          cx = mousePos.x;
-          cy = mousePos.y;
+        if (isLocalTab && currentMouse && currentMouse.x <= chartW && currentMouse.y <= chartH) {
+          cx = currentMouse.x;
+          cy = currentMouse.y;
         } else if (isLocalTab) {
           // Local tab cursor but mouse is outside chart area — skip rendering
           return;
@@ -686,49 +716,69 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         }
 
         if (!Number.isFinite(cx) || !Number.isFinite(cy)) return;
-        if (cx < -50 || cx > chartW + 50 || cy < -50 || cy > chartH + 50) return;
+        // Keep within chart viewport boundaries
+        cx = Math.max(12, Math.min(chartW - 12, cx));
+        cy = Math.max(12, Math.min(chartH - 12, cy));
 
         const cursorColor = c.color || '#00FF66';
         const cursorAvatar = c.avatar || '⚡';
-        const displayName = isLocalTab ? (activeProfile?.shortAddress || 'YOU') : (c.name || 'TRADER');
+        const displayName = isLocalTab
+          ? (profile?.shortAddress ? `YOU (${profile.shortAddress})` : 'YOU')
+          : (c.name || 'TRADER');
 
         ctx.save();
 
-        // Cursor Pointer Arrow
+        // 1. Cursor Pointer Arrow with bold outline
         ctx.fillStyle = cursorColor;
         ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.5;
+        ctx.lineJoin = 'round';
 
         ctx.beginPath();
         ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + 14, cy + 14);
-        ctx.lineTo(cx + 6, cy + 14);
-        ctx.lineTo(cx + 2, cy + 20);
-        ctx.lineTo(cx - 2, cy + 18);
-        ctx.lineTo(cx + 3, cy + 12);
-        ctx.lineTo(cx - 3, cy + 9);
+        ctx.lineTo(cx + 15, cy + 15);
+        ctx.lineTo(cx + 7, cy + 15);
+        ctx.lineTo(cx + 3, cy + 22);
+        ctx.lineTo(cx - 2, cy + 20);
+        ctx.lineTo(cx + 3, cy + 13);
+        ctx.lineTo(cx - 3, cy + 10);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
 
-        // Gamer Tag Box
+        // 2. High-contrast Neo-Brutalist Gamer Tag Box
         const tagText = `${cursorAvatar} ${displayName}`;
-        ctx.font = 'bold 10px "JetBrains Mono", monospace';
-        const tagWidth = ctx.measureText(tagText).width + 10;
+        ctx.font = 'bold 11px "JetBrains Mono", monospace';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        const textWidth = ctx.measureText(tagText).width;
+        const tagWidth = textWidth + 16;
+        const tagHeight = 22;
 
+        // Position badge to avoid clipping at chart borders
+        const badgeX = (cx + 14 + tagWidth > chartW) ? cx - tagWidth - 8 : cx + 12;
+        const badgeY = (cy + 20 + tagHeight > chartH) ? cy - tagHeight - 8 : cy + 16;
+
+        // Solid black neo-brutalist drop shadow
         ctx.fillStyle = '#000000';
-        ctx.fillRect(cx + 12, cy + 18, tagWidth, 18);
-        ctx.strokeStyle = cursorColor;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(cx + 12, cy + 18, tagWidth, 18);
+        ctx.fillRect(badgeX + 2, badgeY + 2, tagWidth, tagHeight);
 
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(tagText, cx + 17, cy + 30);
+        // Badge body in vibrant player theme color
+        ctx.fillStyle = cursorColor;
+        ctx.fillRect(badgeX, badgeY, tagWidth, tagHeight);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(badgeX, badgeY, tagWidth, tagHeight);
+
+        // Bold black text for unmistakable readability
+        ctx.fillStyle = '#000000';
+        ctx.fillText(tagText, badgeX + 8, badgeY + tagHeight / 2);
 
         // Floating Taunt Emoji
         if (c.tauntEmoji && c.tauntTimer && Date.now() - c.tauntTimer < 2500) {
-          ctx.font = '22px sans-serif';
-          ctx.fillText(c.tauntEmoji, cx + 5, cy - 8);
+          ctx.font = '24px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(c.tauntEmoji, cx + 5, cy - 10);
         }
 
         ctx.restore();
@@ -740,7 +790,7 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
 
     render();
     return () => cancelAnimationFrame(animId);
-  }, [candles, currentPrice, priceRange, flags, remoteCursors, mousePos, theme, activeProfile, showEMA, showVolume, showGrid]);
+  }, [theme, showEMA, showVolume, showGrid]);
 
   // Active candle to show in HUD (hovered candle or latest candle)
   const hudCandle = hoveredCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
@@ -871,6 +921,7 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         <canvas
           ref={canvasRef}
           onMouseMove={handleMouseMove}
+          onMouseEnter={handleMouseMove}
           onMouseLeave={handleMouseLeave}
           onClick={handleCanvasClick}
           className="w-full h-full cursor-crosshair block"
@@ -884,7 +935,7 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
           </div>
           <div className="bg-theme-surface/95 backdrop-blur-xs border-2 border-black px-2.5 py-1 text-[11px] font-mono font-bold text-[#00C853] dark:text-[#00FF66] shadow-[2px_2px_0px_#000000] flex items-center gap-1">
             <span className="pulse-green" />
-            <span>{remoteCursors.length + (activeProfile?.isConnected ? 1 : 0)} TRADERS IN SQUAD</span>
+            <span>{Math.max(1, remoteCursors.length)} TRADERS IN SQUAD</span>
           </div>
         </div>
 

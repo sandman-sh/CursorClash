@@ -130,6 +130,39 @@ class MultiplayerService {
         });
       });
     }
+    // 6. Real-time wallet profile sync: update gamer tag and broadcast across room when wallet changes
+    solanaWalletService.subscribe((profile) => {
+      const guestName = 'GUEST_' + this.tabId.slice(-4).toUpperCase();
+      const currentName = profile?.shortAddress || guestName;
+      const currentAvatar = profile?.avatar || '⚡';
+      const currentColor = profile?.color || '#00FF66';
+      const currentId = profile?.address || this.tabId;
+
+      this.latestLocalCursor = {
+        sessionId: this.tabId,
+        playerId: currentId,
+        name: currentName,
+        avatar: currentAvatar,
+        color: currentColor,
+        x: this.latestLocalCursor?.x ?? 0.5,
+        y: this.latestLocalCursor?.y ?? 0.5,
+        lastUpdated: Date.now(),
+        lastReceivedAt: Date.now(),
+      };
+
+      this.cursors.set(this.tabId, this.latestLocalCursor);
+      this.notifyCursors();
+
+      if (profile?.isConnected) {
+        this.broadcast('CURSOR_MOVE', this.latestLocalCursor);
+        this.broadcast('PLAYER_JOIN', {
+          sessionId: this.tabId,
+          roomId: this.currentRoomId,
+          cursor: this.latestLocalCursor,
+          timestamp: Date.now(),
+        });
+      }
+    });
   }
 
   public getTabId(): string {
@@ -141,7 +174,8 @@ class MultiplayerService {
   }
 
   public setRoom(roomId: string) {
-    if (this.currentRoomId === roomId) return;
+    const cleanRoomId = (roomId || 'trench-1').trim().replace(/\/+$/, '').toLowerCase();
+    if (this.currentRoomId === cleanRoomId) return;
 
     // Notify peers in old room of departure
     this.broadcast('PLAYER_LEAVE', {
@@ -149,15 +183,18 @@ class MultiplayerService {
       playerId: this.latestLocalCursor?.playerId || this.tabId,
     });
 
-    this.currentRoomId = roomId;
+    this.currentRoomId = cleanRoomId;
 
     // Reset local canvas state for the new room
     this.cursors.clear();
     this.flags.clear();
     this.tapeEntries = [];
 
+    // Immediately seed local cursor in the new room
+    this.announcePresence();
+
     // Re-connect Supabase channel for the new room
-    this.initSupabaseChannel(roomId);
+    this.initSupabaseChannel(cleanRoomId);
 
     // Re-initialize ambient traders if public room
     this.initAmbientTraders();
@@ -165,11 +202,6 @@ class MultiplayerService {
     this.notifyCursors();
     this.notifyFlags();
     this.notifyTape();
-
-    // Announce arrival in the new room
-    setTimeout(() => {
-      this.announcePresence();
-    }, 400);
   }
 
   /**
@@ -180,11 +212,16 @@ class MultiplayerService {
 
     try {
       if (this.supabaseChannel) {
-        this.supabaseChannel.unsubscribe();
+        try {
+          supabase.removeChannel(this.supabaseChannel);
+        } catch {
+          this.supabaseChannel.unsubscribe();
+        }
         this.supabaseChannel = null;
       }
 
-      const channelName = `arena_${roomId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const cleanRoom = (roomId || 'trench-1').trim().replace(/\/+$/, '').toLowerCase();
+      const channelName = `arena_${cleanRoom.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
       this.supabaseChannel = supabase.channel(channelName, {
         config: {
           broadcast: { self: false },
@@ -220,7 +257,28 @@ class MultiplayerService {
     }
   }
 
-  private announcePresence() {
+  public announcePresence() {
+    const activeProfile = solanaWalletService.getProfile();
+    const guestName = 'GUEST_' + this.tabId.slice(-4).toUpperCase();
+    const currentName = activeProfile?.shortAddress || guestName;
+    const currentAvatar = activeProfile?.avatar || '⚡';
+    const currentColor = activeProfile?.color || '#00FF66';
+    const currentId = activeProfile?.address || this.tabId;
+
+    this.latestLocalCursor = {
+      sessionId: this.tabId,
+      playerId: currentId,
+      name: currentName,
+      avatar: currentAvatar,
+      color: currentColor,
+      x: this.latestLocalCursor?.x ?? 0.5,
+      y: this.latestLocalCursor?.y ?? 0.5,
+      lastUpdated: Date.now(),
+      lastReceivedAt: Date.now(),
+    };
+    this.cursors.set(this.tabId, this.latestLocalCursor);
+    this.notifyCursors();
+
     const payload = {
       sessionId: this.tabId,
       roomId: this.currentRoomId,
@@ -366,6 +424,11 @@ class MultiplayerService {
 
       this.ws = new WebSocket(wsUrl);
 
+      this.ws.onopen = () => {
+        // Announce presence immediately across local network relay
+        this.announcePresence();
+      };
+
       this.ws.onmessage = (event) => {
         try {
           const dataStr = typeof event.data === 'string' ? event.data : '';
@@ -394,9 +457,10 @@ class MultiplayerService {
    * Broadcast across Supabase Realtime + WebSocket + BroadcastChannel
    */
   private broadcast(type: SyncMessage['type'], payload: any) {
+    const cleanRoom = (this.currentRoomId || 'trench-1').trim().replace(/\/+$/, '').toLowerCase();
     const msg: SyncMessage = {
       id: `${this.tabId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      roomId: this.currentRoomId,
+      roomId: cleanRoom,
       sourceTabId: this.tabId,
       type,
       payload,
@@ -463,7 +527,9 @@ class MultiplayerService {
   private handleIncomingMessage(msg: SyncMessage) {
     if (!msg || !msg.type || !msg.id) return;
     if (msg.sourceTabId === this.tabId) return; // ignore self
-    if (msg.roomId !== this.currentRoomId) return; // room isolation
+
+    const normalize = (r: string) => (r || 'trench-1').trim().replace(/\/+$/, '').toLowerCase();
+    if (normalize(msg.roomId) !== normalize(this.currentRoomId)) return; // room isolation
     if (this.processedMsgIds.has(msg.id)) return; // duplicate protection
 
     this.processedMsgIds.add(msg.id);

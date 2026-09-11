@@ -26,12 +26,21 @@ export function AppContent() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     if (roomParam) {
-      setSelectedRoomId(roomParam);
-      multiplayerService.setRoom(roomParam);
-      if (solanaWalletService.getProfile()?.isConnected) {
-        setCurrentView('ARENA');
-      } else {
-        setPendingRoomId(roomParam);
+      const cleanRoom = roomParam.trim().replace(/\/+$/, '').toLowerCase();
+      setSelectedRoomId(cleanRoom);
+      multiplayerService.setRoom(cleanRoom);
+      setCurrentView('ARENA');
+
+      // Keep browser address bar in sync for seamless sharing
+      try {
+        const newUrl = `${window.location.pathname}?room=${cleanRoom}`;
+        window.history.replaceState(null, '', newUrl);
+      } catch {
+        // ignore history state errors
+      }
+
+      if (!solanaWalletService.getProfile()?.isConnected) {
+        setPendingRoomId(cleanRoom);
         setIsWalletModalOpen(true);
       }
     }
@@ -47,26 +56,36 @@ export function AppContent() {
       setSelectedRoomId(room);
       multiplayerService.setRoom(room);
       setCurrentView('ARENA');
+
+      try {
+        const newUrl = `${window.location.pathname}?room=${room}`;
+        window.history.replaceState(null, '', newUrl);
+      } catch {
+        // ignore
+      }
+
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   }, [activeProfile, pendingRoomId]);
 
-  // If user disconnects wallet while in arena, redirect back to homepage
-  useEffect(() => {
-    if (!activeProfile?.isConnected && currentView === 'ARENA') {
-      setCurrentView('HOMEPAGE');
-    }
-  }, [activeProfile, currentView]);
-
   const handleEnterArena = (roomId: string) => {
+    const cleanRoom = (roomId || 'trench-1').trim().replace(/\/+$/, '').toLowerCase();
     if (!activeProfile?.isConnected) {
-      setPendingRoomId(roomId);
+      setPendingRoomId(cleanRoom);
       setIsWalletModalOpen(true);
       return;
     }
-    setSelectedRoomId(roomId);
-    multiplayerService.setRoom(roomId);
+    setSelectedRoomId(cleanRoom);
+    multiplayerService.setRoom(cleanRoom);
     setCurrentView('ARENA');
+
+    try {
+      const newUrl = `${window.location.pathname}?room=${cleanRoom}`;
+      window.history.replaceState(null, '', newUrl);
+    } catch {
+      // ignore
+    }
+
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
