@@ -8,6 +8,7 @@ import confetti from 'canvas-confetti';
 import { Copy, X, Zap, Activity, BarChart2, TrendingUp, TrendingDown, Target, Grid } from 'lucide-react';
 
 interface TradingCanvasProps {
+  roomId?: string;
   activeProfile: WalletProfile | null;
   onOpenWalletModal: () => void;
   currentPrice: number;
@@ -17,6 +18,7 @@ interface TradingCanvasProps {
 }
 
 export const TradingCanvas: React.FC<TradingCanvasProps> = ({
+  roomId,
   activeProfile,
   onOpenWalletModal,
   currentPrice,
@@ -168,7 +170,7 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
       unsubCursors();
       unsubFlags();
     };
-  }, [activeProfile]);
+  }, [activeProfile, roomId]);
 
   // Track mouse coordinates on Canvas and broadcast real cursor position to peers
   const handleMouseMove = useCallback(

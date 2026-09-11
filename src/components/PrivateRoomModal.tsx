@@ -55,7 +55,7 @@ export const PrivateRoomModal: React.FC<PrivateRoomModalProps> = ({
     setIsSubmitting(true);
     const roomId = 'squad-' + Math.random().toString(36).substring(2, 9);
 
-    const success = await supabaseService.createRoom({
+    await supabaseService.createRoom({
       id: roomId,
       name: roomName.trim(),
       is_private: true,
@@ -65,17 +65,24 @@ export const PrivateRoomModal: React.FC<PrivateRoomModalProps> = ({
 
     setIsSubmitting(false);
 
-    if (success) {
-      setCreatedRoomId(roomId);
-    } else {
-      // Offline fallback
-      setCreatedRoomId(roomId);
-    }
+    setCreatedRoomId(roomId);
+    // Crucial: Automatically switch creator to the new squad room immediately
+    // so they are already inside even if they only copy the link and close the modal!
+    onEnterRoom(roomId);
   };
 
   const shareUrl =
     typeof window !== 'undefined' && createdRoomId
-      ? `${window.location.origin}?room=${createdRoomId}`
+      ? (() => {
+          try {
+            const u = new URL(window.location.href);
+            u.searchParams.set('room', createdRoomId);
+            u.hash = '';
+            return u.toString();
+          } catch {
+            return `${window.location.origin}${window.location.pathname}?room=${createdRoomId}`;
+          }
+        })()
       : '';
 
   const handleCopyLink = () => {
@@ -166,10 +173,15 @@ export const PrivateRoomModal: React.FC<PrivateRoomModalProps> = ({
             <div className="p-3 bg-[#00C853]/15 dark:bg-[#00FF66]/15 border-2 border-black shadow-[2px_2px_0px_#000000]">
               <div className="flex items-center gap-1.5 text-xs font-black text-[#00C853] dark:text-[#00FF66] mb-1">
                 <ShieldCheck size={16} />
-                <span>PRIVATE ROOM READY!</span>
+                <span>PRIVATE ROOM READY & ACTIVE!</span>
               </div>
               <div className="font-sans font-black text-sm text-theme-main">
                 {roomName}
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[11px] font-mono text-theme-muted font-bold">
+                <span>ROOM ID:</span>
+                <span className="bg-black text-[#00FF66] px-1.5 py-0.5 font-black border border-black">{createdRoomId}</span>
+                <span className="text-[#00C853] dark:text-[#00FF66]">● YOU ARE CONNECTED</span>
               </div>
             </div>
 
@@ -192,6 +204,9 @@ export const PrivateRoomModal: React.FC<PrivateRoomModalProps> = ({
                   <span>{copied ? 'COPIED' : 'COPY'}</span>
                 </button>
               </div>
+              <p className="text-[10px] text-theme-muted font-mono font-bold mt-1">
+                Share this link with friends so they join this exact squad room in real time!
+              </p>
             </div>
 
             <div className="pt-2">
@@ -199,7 +214,7 @@ export const PrivateRoomModal: React.FC<PrivateRoomModalProps> = ({
                 onClick={handleJoinCreatedRoom}
                 className="w-full neo-btn neo-btn-lg neo-btn-green py-3 flex items-center justify-center gap-2 font-black text-sm shadow-[4px_4px_0px_#000000]"
               >
-                <span>ENTER SQUAD ROOM NOW</span>
+                <span>ENTER SQUAD BATTLEFIELD</span>
                 <ArrowRight size={18} />
               </button>
             </div>

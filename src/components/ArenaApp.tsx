@@ -14,6 +14,7 @@ interface ArenaAppProps {
   onOpenWalletModal: () => void;
   onOpenTelemetry: () => void;
   onOpenPrivateRoomModal: () => void;
+  onNavigateHomepage?: () => void;
 }
 
 export const ArenaApp: React.FC<ArenaAppProps> = ({
@@ -22,6 +23,7 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
   onOpenWalletModal,
   onOpenTelemetry,
   onOpenPrivateRoomModal,
+  onNavigateHomepage,
 }) => {
   const [currentPrice, setCurrentPrice] = useState<number>(priceFeedService.getCurrentPrice());
   const [marketStats, setMarketStats] = useState<MarketStats>(priceFeedService.getMarketStats());
@@ -47,7 +49,15 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
 
   const handleShareRoom = () => {
     if (typeof window === 'undefined') return;
-    const url = `${window.location.origin}?room=${roomId}`;
+    let url = '';
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set('room', roomId);
+      u.hash = '';
+      url = u.toString();
+    } catch {
+      url = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+    }
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -81,6 +91,14 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
                 <h2 className="font-black text-base sm:text-lg text-theme-main font-sans tracking-tight">
                   {displayName}
                 </h2>
+                <button
+                  onClick={handleShareRoom}
+                  className="neo-badge neo-badge-dark text-[10px] py-0.5 px-2 border border-black hover:bg-black hover:text-[#00FF66] transition-colors flex items-center gap-1 cursor-pointer"
+                  title="Click to copy shareable invite link for this room"
+                >
+                  <span className="text-theme-muted font-bold">ROOM:</span>
+                  <span className="font-black text-[#00FF66]">{roomId}</span>
+                </button>
                 {roomId.startsWith('squad-') && (
                   <span className="neo-badge neo-badge-yellow text-[9px] py-0 px-1.5 flex items-center gap-1">
                     <Lock size={10} />
@@ -168,6 +186,7 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
           {/* Left Column: Interactive Candlestick Canvas + Crosshairs + Live Remote Cursors (8 Cols) */}
           <div className={`lg:col-span-8 flex flex-col gap-4 ${mobileTab !== 'CHART' ? 'hidden lg:flex' : 'flex'}`}>
             <TradingCanvas
+              roomId={roomId}
               activeProfile={activeProfile}
               onOpenWalletModal={onOpenWalletModal}
               currentPrice={currentPrice}
@@ -225,6 +244,15 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
                 You must connect an authenticated Solana Devnet wallet (Phantom, Solflare, Backpack, or Instant Burner keypair) to enter the CursorClash Trading Arena.
               </p>
             </div>
+
+            <div className="p-2.5 bg-[#00C853]/10 dark:bg-[#00FF66]/10 border-2 border-black w-full text-left font-mono">
+              <span className="text-[10px] text-theme-muted font-bold block uppercase">INVITE TARGET ROOM:</span>
+              <div className="text-xs font-black text-theme-main flex items-center justify-between gap-2 mt-0.5">
+                <span className="bg-black text-[#00FF66] px-1.5 py-0.5 font-bold border border-black">{roomId}</span>
+                <span className="text-[#00C853] dark:text-[#00FF66] text-[11px] font-bold">READY TO ENTER</span>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-3 w-full">
               <button
                 onClick={onOpenWalletModal}
@@ -234,7 +262,13 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
                 <span>CONNECT WALLET TO ENTER ARENA</span>
               </button>
               <button
-                onClick={() => window.location.href = '/'}
+                onClick={() => {
+                  if (onNavigateHomepage) {
+                    onNavigateHomepage();
+                  } else {
+                    window.location.href = '/';
+                  }
+                }}
                 className="neo-btn neo-btn-sm neo-btn-dark w-full py-2 font-bold text-xs"
               >
                 <span>RETURN TO HOMEPAGE</span>

@@ -9,9 +9,65 @@ import { solanaWalletService, type WalletProfile } from './lib/solana';
 import { multiplayerService } from './lib/multiplayer';
 import { ThemeProvider } from './lib/theme';
 
+function getInitialRoom(): string {
+  if (typeof window !== 'undefined') {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const fromSearch =
+        searchParams.get('room') ||
+        searchParams.get('Room') ||
+        searchParams.get('roomId') ||
+        searchParams.get('r');
+      if (fromSearch) return fromSearch.trim().replace(/\/+$/, '').toLowerCase();
+
+      if (window.location.hash) {
+        const hashStr = window.location.hash.replace(/^[#/?&]+/, '');
+        const hashParams = new URLSearchParams(hashStr);
+        const fromHash =
+          hashParams.get('room') ||
+          hashParams.get('Room') ||
+          hashParams.get('roomId') ||
+          hashParams.get('r');
+        if (fromHash) return fromHash.trim().replace(/\/+$/, '').toLowerCase();
+        if (hashStr.toLowerCase().startsWith('squad-') || hashStr.toLowerCase().startsWith('trench-')) {
+          return hashStr.trim().replace(/\/+$/, '').toLowerCase();
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return 'trench-1';
+}
+
+function getInitialView(): 'HOMEPAGE' | 'ARENA' {
+  if (typeof window !== 'undefined') {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      if (
+        searchParams.has('room') ||
+        searchParams.has('Room') ||
+        searchParams.has('roomId') ||
+        searchParams.has('r')
+      ) {
+        return 'ARENA';
+      }
+      if (window.location.hash) {
+        const h = window.location.hash.toLowerCase();
+        if (h.includes('room=') || h.includes('squad-') || h.includes('trench-')) {
+          return 'ARENA';
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return 'HOMEPAGE';
+}
+
 export function AppContent() {
-  const [currentView, setCurrentView] = useState<'HOMEPAGE' | 'ARENA'>('HOMEPAGE');
-  const [selectedRoomId, setSelectedRoomId] = useState<string>('trench-1');
+  const [currentView, setCurrentView] = useState<'HOMEPAGE' | 'ARENA'>(getInitialView);
+  const [selectedRoomId, setSelectedRoomId] = useState<string>(getInitialRoom);
   const [activeProfile, setActiveProfile] = useState<WalletProfile | null>(solanaWalletService.getProfile());
   const [isTelemetryOpen, setIsTelemetryOpen] = useState(false);
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
@@ -22,30 +78,50 @@ export function AppContent() {
   useEffect(() => {
     const unsub = solanaWalletService.subscribe(setActiveProfile);
 
-    // Check if a room was provided in URL search parameters
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    if (roomParam) {
-      const cleanRoom = roomParam.trim().replace(/\/+$/, '').toLowerCase();
-      setSelectedRoomId(cleanRoom);
-      multiplayerService.setRoom(cleanRoom);
-      setCurrentView('ARENA');
+    // Check if a room was provided in URL search parameters or hash
+    const syncFromUrl = () => {
+      const initialRoom = getInitialRoom();
+      const hasRoomInUrl = typeof window !== 'undefined' && (
+        new URLSearchParams(window.location.search).has('room') ||
+        new URLSearchParams(window.location.search).has('Room') ||
+        new URLSearchParams(window.location.search).has('roomId') ||
+        new URLSearchParams(window.location.search).has('r') ||
+        window.location.hash.includes('room=') ||
+        window.location.hash.includes('squad-')
+      );
 
-      // Keep browser address bar in sync for seamless sharing
-      try {
-        const newUrl = `${window.location.pathname}?room=${cleanRoom}`;
-        window.history.replaceState(null, '', newUrl);
-      } catch {
-        // ignore history state errors
+      if (hasRoomInUrl && initialRoom) {
+        setSelectedRoomId(initialRoom);
+        multiplayerService.setRoom(initialRoom);
+        setCurrentView('ARENA');
+
+        // Keep browser address bar in sync for seamless sharing
+        try {
+          const u = new URL(window.location.href);
+          u.searchParams.set('room', initialRoom);
+          u.hash = '';
+          window.history.replaceState(null, '', u.toString());
+        } catch {
+          // ignore history state errors
+        }
+
+        if (!solanaWalletService.getProfile()?.isConnected) {
+          setPendingRoomId(initialRoom);
+          setIsWalletModalOpen(true);
+        }
       }
+    };
 
-      if (!solanaWalletService.getProfile()?.isConnected) {
-        setPendingRoomId(cleanRoom);
-        setIsWalletModalOpen(true);
-      }
-    }
+    syncFromUrl();
 
-    return () => unsub();
+    window.addEventListener('popstate', syncFromUrl);
+    window.addEventListener('hashchange', syncFromUrl);
+
+    return () => {
+      unsub();
+      window.removeEventListener('popstate', syncFromUrl);
+      window.removeEventListener('hashchange', syncFromUrl);
+    };
   }, []);
 
   // When user successfully connects wallet, auto-enter pending room if one was requested
@@ -58,8 +134,10 @@ export function AppContent() {
       setCurrentView('ARENA');
 
       try {
-        const newUrl = `${window.location.pathname}?room=${room}`;
-        window.history.replaceState(null, '', newUrl);
+        const u = new URL(window.location.href);
+        u.searchParams.set('room', room);
+        u.hash = '';
+        window.history.replaceState(null, '', u.toString());
       } catch {
         // ignore
       }
@@ -80,10 +158,12 @@ export function AppContent() {
     setCurrentView('ARENA');
 
     try {
-      const newUrl = `${window.location.pathname}?room=${cleanRoom}`;
-      window.history.replaceState(null, '', newUrl);
+      const u = new URL(window.location.href);
+      u.searchParams.set('room', cleanRoom);
+      u.hash = '';
+      window.history.replaceState(null, '', u.toString());
     } catch {
-      // ignore
+      window.history.replaceState(null, '', `${window.location.origin}${window.location.pathname}?room=${cleanRoom}`);
     }
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -108,6 +188,13 @@ export function AppContent() {
             return;
           }
           setCurrentView(view);
+          if (view === 'HOMEPAGE') {
+            try {
+              window.history.replaceState(null, '', window.location.pathname);
+            } catch {
+              // ignore
+            }
+          }
         }}
         onOpenTelemetry={() => setIsTelemetryOpen(true)}
         onOpenWalletModal={() => setIsWalletModalOpen(true)}
@@ -129,6 +216,14 @@ export function AppContent() {
             onOpenWalletModal={() => setIsWalletModalOpen(true)}
             onOpenTelemetry={() => setIsTelemetryOpen(true)}
             onOpenPrivateRoomModal={() => setIsPrivateRoomModalOpen(true)}
+            onNavigateHomepage={() => {
+              setCurrentView('HOMEPAGE');
+              try {
+                window.history.replaceState(null, '', window.location.pathname);
+              } catch {
+                // ignore
+              }
+            }}
           />
         )}
       </main>

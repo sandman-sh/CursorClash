@@ -69,12 +69,43 @@ interface SyncMessage {
   payload: any;
 }
 
+function getInitialRoom(): string {
+  if (typeof window !== 'undefined') {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const fromSearch =
+        searchParams.get('room') ||
+        searchParams.get('Room') ||
+        searchParams.get('roomId') ||
+        searchParams.get('r');
+      if (fromSearch) return fromSearch.trim().replace(/\/+$/, '').toLowerCase();
+
+      if (window.location.hash) {
+        const hashStr = window.location.hash.replace(/^[#/?&]+/, '');
+        const hashParams = new URLSearchParams(hashStr);
+        const fromHash =
+          hashParams.get('room') ||
+          hashParams.get('Room') ||
+          hashParams.get('roomId') ||
+          hashParams.get('r');
+        if (fromHash) return fromHash.trim().replace(/\/+$/, '').toLowerCase();
+        if (hashStr.toLowerCase().startsWith('squad-') || hashStr.toLowerCase().startsWith('trench-')) {
+          return hashStr.trim().replace(/\/+$/, '').toLowerCase();
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return 'trench-1';
+}
+
 class MultiplayerService {
   private channel: BroadcastChannel | null = null;
   private ws: WebSocket | null = null;
   private supabaseChannel: any = null;
   private tabId: string;
-  private currentRoomId: string = 'trench-1';
+  private currentRoomId: string = getInitialRoom();
   private cursors: Map<string, RemoteCursor> = new Map();
   private flags: Map<string, TapFlag> = new Map();
   private tapeEntries: TapeEntry[] = [];
@@ -173,9 +204,12 @@ class MultiplayerService {
     return this.currentRoomId;
   }
 
-  public setRoom(roomId: string) {
+  public setRoom(roomId: string, force: boolean = false) {
     const cleanRoomId = (roomId || 'trench-1').trim().replace(/\/+$/, '').toLowerCase();
-    if (this.currentRoomId === cleanRoomId) return;
+    if (this.currentRoomId === cleanRoomId && !force) {
+      this.announcePresence();
+      return;
+    }
 
     // Notify peers in old room of departure
     this.broadcast('PLAYER_LEAVE', {
