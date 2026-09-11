@@ -1,10 +1,14 @@
 /**
  * Real-Time Multiplayer Cursor & Event Synchronization Service
- * Dual-layer synchronization using native BroadcastChannel (zero-latency cross-tab)
- * and WebSocket Relay (cross-browser/network) with room-based canvas isolation and Supabase logging.
+ * Tri-layer synchronization mesh:
+ * 1. Supabase Realtime Channels (Global cross-browser, cross-device, production-ready)
+ * 2. Local WebSocket Relay (Ultra-fast localhost dev relay)
+ * 3. Native BroadcastChannel (Zero-latency cross-tab fallback)
+ *
+ * Includes automatic room presence, join announcements, and clock-skew resilient cursor tracking.
  */
 
-import { supabaseService, type DbTradeLog } from './supabase';
+import { supabase, supabaseService, type DbTradeLog } from './supabase';
 import { solanaWalletService } from './solana';
 
 export interface RemoteCursor {
@@ -16,6 +20,7 @@ export interface RemoteCursor {
   x: number; // 0 to 1 relative canvas position
   y: number; // 0 to 1 relative canvas position
   lastUpdated: number;
+  lastReceivedAt?: number;
   tauntEmoji?: string;
   tauntTimer?: number;
   isSimulated?: boolean;
@@ -60,13 +65,14 @@ interface SyncMessage {
   id: string;
   roomId: string;
   sourceTabId: string;
-  type: 'CURSOR_MOVE' | 'NEW_FLAG' | 'RESOLVE_FLAG' | 'TAUNT' | 'COPY_TRADE' | 'PLAYER_LEAVE';
+  type: 'CURSOR_MOVE' | 'NEW_FLAG' | 'RESOLVE_FLAG' | 'TAUNT' | 'COPY_TRADE' | 'PLAYER_LEAVE' | 'PLAYER_JOIN' | 'PLAYER_STATE';
   payload: any;
 }
 
 class MultiplayerService {
   private channel: BroadcastChannel | null = null;
   private ws: WebSocket | null = null;
+  private supabaseChannel: any = null;
   private tabId: string;
   private currentRoomId: string = 'trench-1';
   private cursors: Map<string, RemoteCursor> = new Map();
@@ -79,11 +85,14 @@ class MultiplayerService {
   private tapeListeners: Set<EventCallback<TapeEntry[]>> = new Set();
 
   private ambientInterval: any = null;
+  private lastBroadcastTime: number = 0;
+  private pendingCursorBroadcast: any = null;
+  private latestLocalCursor: RemoteCursor | null = null;
 
   constructor() {
     this.tabId = 'tab_' + Math.random().toString(36).substring(2, 9);
 
-    // Cross-tab BroadcastChannel
+    // 1. Cross-tab BroadcastChannel
     try {
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         this.channel = new BroadcastChannel('cursorclash_multiplayer_channel');
@@ -93,15 +102,33 @@ class MultiplayerService {
       console.warn('BroadcastChannel not supported:', err);
     }
 
-    // Cross-browser WebSocket relay
+    // 2. Cross-browser WebSocket relay (local fallback)
     this.initWebSocket();
 
-    // Start ambient peer cursors for public arenas
+    // 3. Supabase Realtime Channel (Global cross-browser & cross-device backbone)
+    this.initSupabaseChannel(this.currentRoomId);
+
+    // 4. Start ambient peer cursors for public arenas
     this.initAmbientTraders();
 
-    // Stale cursor cleanup (removes inactive peers after 8s)
+    // 5. Stale cursor cleanup (removes inactive peers)
     if (typeof window !== 'undefined') {
-      setInterval(() => this.cleanupStaleCursors(), 3000);
+      setInterval(() => this.cleanupStaleCursors(), 2500);
+
+      // Periodic presence heartbeat so sitting idle doesn't make cursor vanish
+      setInterval(() => {
+        if (this.latestLocalCursor) {
+          this.broadcast('CURSOR_MOVE', this.latestLocalCursor);
+        }
+      }, 3000);
+
+      // Clean departure when closing tab or browser
+      window.addEventListener('beforeunload', () => {
+        this.broadcast('PLAYER_LEAVE', {
+          sessionId: this.tabId,
+          playerId: this.latestLocalCursor?.playerId || this.tabId,
+        });
+      });
     }
   }
 
@@ -109,8 +136,19 @@ class MultiplayerService {
     return this.tabId;
   }
 
+  public getRoom(): string {
+    return this.currentRoomId;
+  }
+
   public setRoom(roomId: string) {
     if (this.currentRoomId === roomId) return;
+
+    // Notify peers in old room of departure
+    this.broadcast('PLAYER_LEAVE', {
+      sessionId: this.tabId,
+      playerId: this.latestLocalCursor?.playerId || this.tabId,
+    });
+
     this.currentRoomId = roomId;
 
     // Reset local canvas state for the new room
@@ -118,12 +156,109 @@ class MultiplayerService {
     this.flags.clear();
     this.tapeEntries = [];
 
+    // Re-connect Supabase channel for the new room
+    this.initSupabaseChannel(roomId);
+
     // Re-initialize ambient traders if public room
     this.initAmbientTraders();
 
     this.notifyCursors();
     this.notifyFlags();
     this.notifyTape();
+
+    // Announce arrival in the new room
+    setTimeout(() => {
+      this.announcePresence();
+    }, 400);
+  }
+
+  /**
+   * Supabase Realtime Channel for Global Cross-Browser & Cross-Device Mesh
+   */
+  private initSupabaseChannel(roomId: string) {
+    if (!supabase) return;
+
+    try {
+      if (this.supabaseChannel) {
+        this.supabaseChannel.unsubscribe();
+        this.supabaseChannel = null;
+      }
+
+      const channelName = `arena_${roomId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      this.supabaseChannel = supabase.channel(channelName, {
+        config: {
+          broadcast: { self: false },
+        },
+      });
+
+      this.supabaseChannel
+        .on('broadcast', { event: 'CURSOR_MOVE' }, ({ payload }: any) => {
+          this.handleIncomingMessage({
+            id: payload?.id || `sb_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            roomId: this.currentRoomId,
+            sourceTabId: payload?.sessionId || '',
+            type: 'CURSOR_MOVE',
+            payload,
+          });
+        })
+        .on('broadcast', { event: 'SYNC_MSG' }, ({ payload }: any) => {
+          this.handleIncomingMessage(payload);
+        })
+        .on('broadcast', { event: 'PLAYER_JOIN' }, ({ payload }: any) => {
+          this.handlePlayerJoin(payload);
+        })
+        .on('broadcast', { event: 'PLAYER_LEAVE' }, ({ payload }: any) => {
+          this.handlePlayerLeave(payload);
+        })
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            this.announcePresence();
+          }
+        });
+    } catch (err) {
+      console.warn('Supabase Realtime Channel error:', err);
+    }
+  }
+
+  private announcePresence() {
+    const payload = {
+      sessionId: this.tabId,
+      roomId: this.currentRoomId,
+      cursor: this.latestLocalCursor,
+      timestamp: Date.now(),
+    };
+
+    // Broadcast JOIN event across all channels
+    this.broadcast('PLAYER_JOIN', payload);
+  }
+
+  private handlePlayerJoin(payload: any) {
+    if (!payload || payload.sessionId === this.tabId) return;
+
+    // New player joined! If they sent their cursor, record it
+    if (payload.cursor) {
+      this.recordRemoteCursor(payload.cursor);
+    }
+
+    // Greet the new player by sending back our current position & active flags
+    if (this.latestLocalCursor) {
+      this.broadcast('CURSOR_MOVE', this.latestLocalCursor);
+    }
+
+    // Also share active pending flags with the newcomer
+    const activeFlags = Array.from(this.flags.values()).filter((f) => f.status === 'PENDING');
+    activeFlags.forEach((flag) => {
+      this.broadcast('NEW_FLAG', flag);
+    });
+  }
+
+  private handlePlayerLeave(payload: any) {
+    if (!payload) return;
+    const key = payload.sessionId || payload.playerId;
+    if (key && this.cursors.has(key)) {
+      this.cursors.delete(key);
+      this.notifyCursors();
+    }
   }
 
   private initAmbientTraders() {
@@ -148,6 +283,7 @@ class MultiplayerService {
         x: 0.62,
         y: 0.42,
         lastUpdated: Date.now(),
+        lastReceivedAt: Date.now(),
         isSimulated: true,
       },
       {
@@ -159,6 +295,7 @@ class MultiplayerService {
         x: 0.45,
         y: 0.52,
         lastUpdated: Date.now(),
+        lastReceivedAt: Date.now(),
         isSimulated: true,
       },
       {
@@ -170,6 +307,7 @@ class MultiplayerService {
         x: 0.78,
         y: 0.38,
         lastUpdated: Date.now(),
+        lastReceivedAt: Date.now(),
         isSimulated: true,
       },
     ];
@@ -196,6 +334,7 @@ class MultiplayerService {
         if (peer.y > 0.75) { peer.y = 0.75; vel.vy = -Math.abs(vel.vy); }
 
         peer.lastUpdated = Date.now();
+        peer.lastReceivedAt = Date.now();
         this.cursors.set(peer.sessionId!, peer);
         changed = true;
 
@@ -217,10 +356,6 @@ class MultiplayerService {
     }, 120);
   }
 
-  public getRoom(): string {
-    return this.currentRoomId;
-  }
-
   private initWebSocket() {
     if (typeof window === 'undefined') return;
 
@@ -233,10 +368,13 @@ class MultiplayerService {
 
       this.ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          this.handleIncomingMessage(data);
+          const dataStr = typeof event.data === 'string' ? event.data : '';
+          if (dataStr) {
+            const data = JSON.parse(dataStr);
+            this.handleIncomingMessage(data);
+          }
         } catch {
-          // ignore
+          // ignore malformed payloads
         }
       };
 
@@ -248,10 +386,13 @@ class MultiplayerService {
         this.ws?.close();
       };
     } catch {
-      // fallback to BroadcastChannel
+      // fallback to BroadcastChannel & Supabase
     }
   }
 
+  /**
+   * Broadcast across Supabase Realtime + WebSocket + BroadcastChannel
+   */
   private broadcast(type: SyncMessage['type'], payload: any) {
     const msg: SyncMessage = {
       id: `${this.tabId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -262,12 +403,45 @@ class MultiplayerService {
     };
 
     this.processedMsgIds.add(msg.id);
-    if (this.processedMsgIds.size > 200) {
+    if (this.processedMsgIds.size > 300) {
       const first = this.processedMsgIds.values().next().value;
       if (first) this.processedMsgIds.delete(first);
     }
 
-    // Broadcast across tabs
+    // 1. Supabase Realtime Channel Broadcast
+    if (this.supabaseChannel) {
+      try {
+        if (type === 'CURSOR_MOVE') {
+          this.supabaseChannel.send({
+            type: 'broadcast',
+            event: 'CURSOR_MOVE',
+            payload,
+          });
+        } else if (type === 'PLAYER_JOIN') {
+          this.supabaseChannel.send({
+            type: 'broadcast',
+            event: 'PLAYER_JOIN',
+            payload,
+          });
+        } else if (type === 'PLAYER_LEAVE') {
+          this.supabaseChannel.send({
+            type: 'broadcast',
+            event: 'PLAYER_LEAVE',
+            payload,
+          });
+        } else {
+          this.supabaseChannel.send({
+            type: 'broadcast',
+            event: 'SYNC_MSG',
+            payload: msg,
+          });
+        }
+      } catch (err) {
+        console.warn('Supabase broadcast error:', err);
+      }
+    }
+
+    // 2. Cross-tab BroadcastChannel
     if (this.channel) {
       try {
         this.channel.postMessage(msg);
@@ -276,7 +450,7 @@ class MultiplayerService {
       }
     }
 
-    // Broadcast across network clients
+    // 3. Local WebSocket Relay
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify(msg));
@@ -290,20 +464,25 @@ class MultiplayerService {
     if (!msg || !msg.type || !msg.id) return;
     if (msg.sourceTabId === this.tabId) return; // ignore self
     if (msg.roomId !== this.currentRoomId) return; // room isolation
-    if (this.processedMsgIds.has(msg.id)) return; // duplicate
+    if (this.processedMsgIds.has(msg.id)) return; // duplicate protection
 
     this.processedMsgIds.add(msg.id);
-    if (this.processedMsgIds.size > 200) {
+    if (this.processedMsgIds.size > 300) {
       const first = this.processedMsgIds.values().next().value;
       if (first) this.processedMsgIds.delete(first);
     }
 
     switch (msg.type) {
       case 'CURSOR_MOVE': {
-        const c: RemoteCursor = msg.payload;
-        const key = c.sessionId || c.playerId;
-        this.cursors.set(key, c);
-        this.notifyCursors();
+        this.recordRemoteCursor(msg.payload);
+        break;
+      }
+      case 'PLAYER_JOIN': {
+        this.handlePlayerJoin(msg.payload);
+        break;
+      }
+      case 'PLAYER_LEAVE': {
+        this.handlePlayerLeave(msg.payload);
         break;
       }
       case 'NEW_FLAG': {
@@ -313,7 +492,7 @@ class MultiplayerService {
         this.addTapeEntry({
           id: 'tape-' + Math.random().toString(36).substring(2, 9),
           roomId: flag.roomId,
-          timestamp: flag.timestamp,
+          timestamp: flag.timestamp || Date.now(),
           playerName: flag.playerName,
           playerAvatar: flag.playerAvatar,
           action: flag.type === 'LONG' ? 'PLANTED_LONG' : 'PLANTED_SHORT',
@@ -377,13 +556,24 @@ class MultiplayerService {
         });
         break;
       }
-      case 'PLAYER_LEAVE': {
-        const { playerId } = msg.payload;
-        this.cursors.delete(playerId);
-        this.notifyCursors();
-        break;
-      }
     }
+  }
+
+  private recordRemoteCursor(c: RemoteCursor) {
+    if (!c) return;
+    if (c.sessionId === this.tabId) return; // Don't record own broadcast
+
+    const key = c.sessionId || c.playerId;
+    if (!key) return;
+
+    const updatedCursor: RemoteCursor = {
+      ...c,
+      sessionId: c.sessionId || key,
+      lastReceivedAt: Date.now(), // Local clock timestamp to protect against clock skew
+    };
+
+    this.cursors.set(key, updatedCursor);
+    this.notifyCursors();
   }
 
   public subscribeCursors(cb: EventCallback<RemoteCursor[]>): () => void {
@@ -413,17 +603,39 @@ class MultiplayerService {
   }
 
   /**
-   * Broadcast real player cursor position within current room
+   * Broadcast real player cursor position within current room.
+   * Updates local map immediately and throttles network broadcast to 30ms (33fps).
    */
   public broadcastCursor(cursor: RemoteCursor) {
     const fullCursor: RemoteCursor = {
       ...cursor,
       sessionId: this.tabId,
+      lastUpdated: Date.now(),
+      lastReceivedAt: Date.now(),
     };
-    // Store locally so the cursor appears in the cursors Map for rendering
+
+    this.latestLocalCursor = fullCursor;
+
+    // 1. Immediately store in local cursors map so local cursor rendering is instantaneous
     this.cursors.set(this.tabId, fullCursor);
     this.notifyCursors();
-    this.broadcast('CURSOR_MOVE', fullCursor);
+
+    // 2. Throttle network broadcast to ~30ms to prevent network/rate-limit flooding
+    const now = Date.now();
+    if (now - this.lastBroadcastTime >= 30) {
+      this.lastBroadcastTime = now;
+      this.broadcast('CURSOR_MOVE', fullCursor);
+    } else {
+      if (!this.pendingCursorBroadcast) {
+        this.pendingCursorBroadcast = setTimeout(() => {
+          this.pendingCursorBroadcast = null;
+          this.lastBroadcastTime = Date.now();
+          if (this.latestLocalCursor) {
+            this.broadcast('CURSOR_MOVE', this.latestLocalCursor);
+          }
+        }, 32);
+      }
+    }
   }
 
   /**
@@ -630,12 +842,21 @@ class MultiplayerService {
   private cleanupStaleCursors() {
     const now = Date.now();
     let changed = false;
+
     this.cursors.forEach((cursor, id) => {
-      if (!cursor.isSimulated && now - cursor.lastUpdated > 10000) {
+      // Don't delete simulated traders
+      if (cursor.isSimulated) return;
+      // Don't delete local player's own cursor
+      if (cursor.sessionId === this.tabId) return;
+
+      // Check against local reception timestamp (protects against clock skew)
+      const lastActive = cursor.lastReceivedAt || cursor.lastUpdated || 0;
+      if (now - lastActive > 25000) {
         this.cursors.delete(id);
         changed = true;
       }
     });
+
     if (changed) {
       this.notifyCursors();
     }

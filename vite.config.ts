@@ -155,7 +155,7 @@ function multiplayerRelayPlugin(): Plugin {
       const wss = new ServerConstructor({ noServer: true })
 
       server.httpServer.on('upgrade', (req, socket, head) => {
-        if (req.url === '/multiplayer') {
+        if (req.url && req.url.startsWith('/multiplayer')) {
           wss.handleUpgrade(req, socket, head, (ws: any) => {
             wss.emit('connection', ws, req)
           })
@@ -163,10 +163,11 @@ function multiplayerRelayPlugin(): Plugin {
       })
 
       wss.on('connection', (ws: any) => {
-        ws.on('message', (message: any, isBinary: boolean) => {
+        ws.on('message', (message: any) => {
+          const textMsg = message.toString()
           wss.clients.forEach((client: any) => {
             if (client !== ws && client.readyState === 1) { // 1 = OPEN
-              client.send(message, { binary: isBinary })
+              client.send(textMsg)
             }
           })
         })

@@ -185,10 +185,12 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         setMousePos({ x, y, price: priceAtY });
       }
 
-      // Broadcast cursor position (always, so local cursor renders in the unified loop)
+      // Broadcast cursor position (throttled inside multiplayer service)
+      const myTabId = multiplayerService.getTabId();
+      const guestName = 'GUEST_' + myTabId.slice(-4).toUpperCase();
       multiplayerService.broadcastCursor({
-        playerId: activeProfile?.address || 'local_anon',
-        name: activeProfile?.shortAddress || 'YOU',
+        playerId: activeProfile?.address || myTabId,
+        name: activeProfile?.shortAddress || guestName,
         avatar: activeProfile?.avatar || '⚡',
         color: activeProfile?.color || '#00FF66',
         x: normX,
@@ -679,14 +681,21 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
           // Local tab cursor but mouse is outside chart area — skip rendering
           return;
         } else {
-          cx = c.x * chartW;
-          cy = c.y * chartH;
+          cx = (c.x ?? 0.5) * chartW;
+          cy = (c.y ?? 0.5) * chartH;
         }
+
+        if (!Number.isFinite(cx) || !Number.isFinite(cy)) return;
+        if (cx < -50 || cx > chartW + 50 || cy < -50 || cy > chartH + 50) return;
+
+        const cursorColor = c.color || '#00FF66';
+        const cursorAvatar = c.avatar || '⚡';
+        const displayName = isLocalTab ? (activeProfile?.shortAddress || 'YOU') : (c.name || 'TRADER');
 
         ctx.save();
 
         // Cursor Pointer Arrow
-        ctx.fillStyle = c.color;
+        ctx.fillStyle = cursorColor;
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 2;
 
@@ -703,13 +712,13 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         ctx.stroke();
 
         // Gamer Tag Box
-        const tagText = `${c.avatar} ${c.name}`;
+        const tagText = `${cursorAvatar} ${displayName}`;
         ctx.font = 'bold 10px "JetBrains Mono", monospace';
         const tagWidth = ctx.measureText(tagText).width + 10;
 
         ctx.fillStyle = '#000000';
         ctx.fillRect(cx + 12, cy + 18, tagWidth, 18);
-        ctx.strokeStyle = c.color;
+        ctx.strokeStyle = cursorColor;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(cx + 12, cy + 18, tagWidth, 18);
 
