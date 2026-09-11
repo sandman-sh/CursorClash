@@ -185,18 +185,16 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         setMousePos({ x, y, price: priceAtY });
       }
 
-      // Broadcast real cursor position if wallet is connected
-      if (activeProfile && activeProfile.isConnected) {
-        multiplayerService.broadcastCursor({
-          playerId: activeProfile.address,
-          name: activeProfile.shortAddress,
-          avatar: activeProfile.avatar,
-          color: activeProfile.color,
-          x: normX,
-          y: normY,
-          lastUpdated: Date.now(),
-        });
-      }
+      // Broadcast cursor position (always, so local cursor renders in the unified loop)
+      multiplayerService.broadcastCursor({
+        playerId: activeProfile?.address || 'local_anon',
+        name: activeProfile?.shortAddress || 'YOU',
+        avatar: activeProfile?.avatar || '⚡',
+        color: activeProfile?.color || '#00FF66',
+        x: normX,
+        y: normY,
+        lastUpdated: Date.now(),
+      });
     },
     [activeProfile, priceRange, candles]
   );
@@ -666,13 +664,24 @@ export const TradingCanvas: React.FC<TradingCanvasProps> = ({
         ctx.restore();
       }
 
-      // 7. Render Real Multiplayer Remote Cursors
-      const myId = activeProfile?.address;
+      // 7. Render ALL Multiplayer Cursors (local + remote + simulated)
+      const myTabId = multiplayerService.getTabId();
       remoteCursors.forEach((c) => {
-        if (c.playerId === myId) return;
+        const isLocalTab = c.sessionId === myTabId;
 
-        const cx = c.x * chartW;
-        const cy = c.y * chartH;
+        // For the local tab's cursor, use mousePos for pixel-perfect positioning
+        // For remote/simulated cursors, use normalized coordinates
+        let cx: number, cy: number;
+        if (isLocalTab && mousePos && mousePos.x <= chartW && mousePos.y <= chartH) {
+          cx = mousePos.x;
+          cy = mousePos.y;
+        } else if (isLocalTab) {
+          // Local tab cursor but mouse is outside chart area — skip rendering
+          return;
+        } else {
+          cx = c.x * chartW;
+          cy = c.y * chartH;
+        }
 
         ctx.save();
 

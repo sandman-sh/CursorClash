@@ -8,6 +8,7 @@ import { supabaseService, type DbTradeLog } from './supabase';
 import { solanaWalletService } from './solana';
 
 export interface RemoteCursor {
+  sessionId?: string;
   playerId: string;
   name: string;
   avatar: string;
@@ -17,6 +18,7 @@ export interface RemoteCursor {
   lastUpdated: number;
   tauntEmoji?: string;
   tauntTimer?: number;
+  isSimulated?: boolean;
 }
 
 export interface TapFlag {
@@ -76,6 +78,8 @@ class MultiplayerService {
   private flagListeners: Set<EventCallback<TapFlag[]>> = new Set();
   private tapeListeners: Set<EventCallback<TapeEntry[]>> = new Set();
 
+  private ambientInterval: any = null;
+
   constructor() {
     this.tabId = 'tab_' + Math.random().toString(36).substring(2, 9);
 
@@ -92,10 +96,17 @@ class MultiplayerService {
     // Cross-browser WebSocket relay
     this.initWebSocket();
 
-    // Stale cursor cleanup (removes inactive peers after 12s)
+    // Start ambient peer cursors for public arenas
+    this.initAmbientTraders();
+
+    // Stale cursor cleanup (removes inactive peers after 8s)
     if (typeof window !== 'undefined') {
       setInterval(() => this.cleanupStaleCursors(), 3000);
     }
+  }
+
+  public getTabId(): string {
+    return this.tabId;
   }
 
   public setRoom(roomId: string) {
@@ -107,9 +118,103 @@ class MultiplayerService {
     this.flags.clear();
     this.tapeEntries = [];
 
+    // Re-initialize ambient traders if public room
+    this.initAmbientTraders();
+
     this.notifyCursors();
     this.notifyFlags();
     this.notifyTape();
+  }
+
+  private initAmbientTraders() {
+    if (typeof window === 'undefined') return;
+    if (this.ambientInterval) {
+      clearInterval(this.ambientInterval);
+      this.ambientInterval = null;
+    }
+
+    // In private squads, only real human players appear
+    if (this.currentRoomId.startsWith('squad-')) {
+      return;
+    }
+
+    const ambientPeers: RemoteCursor[] = [
+      {
+        sessionId: 'sim_whale',
+        playerId: 'sim_whale',
+        name: 'DegenWhale.sol',
+        avatar: '🐋',
+        color: '#00FF66',
+        x: 0.62,
+        y: 0.42,
+        lastUpdated: Date.now(),
+        isSimulated: true,
+      },
+      {
+        sessionId: 'sim_sniper',
+        playerId: 'sim_sniper',
+        name: 'SolSniper.sol',
+        avatar: '⚡',
+        color: '#FFE600',
+        x: 0.45,
+        y: 0.52,
+        lastUpdated: Date.now(),
+        isSimulated: true,
+      },
+      {
+        sessionId: 'sim_chad',
+        playerId: 'sim_chad',
+        name: 'AlphaChad.sol',
+        avatar: '🚀',
+        color: '#00F0FF',
+        x: 0.78,
+        y: 0.38,
+        lastUpdated: Date.now(),
+        isSimulated: true,
+      },
+    ];
+
+    ambientPeers.forEach((p) => this.cursors.set(p.sessionId!, p));
+    this.notifyCursors();
+
+    const velocities = [
+      { vx: 0.002, vy: 0.0015 },
+      { vx: -0.0018, vy: 0.0022 },
+      { vx: 0.0022, vy: -0.0018 },
+    ];
+
+    this.ambientInterval = setInterval(() => {
+      let changed = false;
+      ambientPeers.forEach((peer, i) => {
+        const vel = velocities[i];
+        peer.x += vel.vx + (Math.random() - 0.5) * 0.004;
+        peer.y += vel.vy + (Math.random() - 0.5) * 0.004;
+
+        if (peer.x < 0.12) { peer.x = 0.12; vel.vx = Math.abs(vel.vx); }
+        if (peer.x > 0.88) { peer.x = 0.88; vel.vx = -Math.abs(vel.vx); }
+        if (peer.y < 0.18) { peer.y = 0.18; vel.vy = Math.abs(vel.vy); }
+        if (peer.y > 0.75) { peer.y = 0.75; vel.vy = -Math.abs(vel.vy); }
+
+        peer.lastUpdated = Date.now();
+        this.cursors.set(peer.sessionId!, peer);
+        changed = true;
+
+        if (Math.random() < 0.008 && !peer.tauntTimer) {
+          const emojis = ['🚀', '🔥', '💎', '🎯', '⚡'];
+          peer.tauntEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+          peer.tauntTimer = Date.now();
+          setTimeout(() => {
+            delete peer.tauntEmoji;
+            delete peer.tauntTimer;
+            this.notifyCursors();
+          }, 2400);
+        }
+      });
+
+      if (changed) {
+        this.notifyCursors();
+      }
+    }, 120);
   }
 
   public getRoom(): string {
@@ -196,7 +301,8 @@ class MultiplayerService {
     switch (msg.type) {
       case 'CURSOR_MOVE': {
         const c: RemoteCursor = msg.payload;
-        this.cursors.set(c.playerId, c);
+        const key = c.sessionId || c.playerId;
+        this.cursors.set(key, c);
         this.notifyCursors();
         break;
       }
@@ -310,7 +416,14 @@ class MultiplayerService {
    * Broadcast real player cursor position within current room
    */
   public broadcastCursor(cursor: RemoteCursor) {
-    this.broadcast('CURSOR_MOVE', cursor);
+    const fullCursor: RemoteCursor = {
+      ...cursor,
+      sessionId: this.tabId,
+    };
+    // Store locally so the cursor appears in the cursors Map for rendering
+    this.cursors.set(this.tabId, fullCursor);
+    this.notifyCursors();
+    this.broadcast('CURSOR_MOVE', fullCursor);
   }
 
   /**
@@ -518,7 +631,7 @@ class MultiplayerService {
     const now = Date.now();
     let changed = false;
     this.cursors.forEach((cursor, id) => {
-      if (now - cursor.lastUpdated > 12000) {
+      if (!cursor.isSimulated && now - cursor.lastUpdated > 10000) {
         this.cursors.delete(id);
         changed = true;
       }
