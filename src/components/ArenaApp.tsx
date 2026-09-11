@@ -6,7 +6,7 @@ import { TradeTape } from './TradeTape';
 import { Leaderboard } from './Leaderboard';
 import { multiplayerService, type TapFlag } from '../lib/multiplayer';
 import { priceFeedService, type MarketStats } from '../lib/priceFeed';
-import { Cpu, Activity, BarChart2, Flame, Share2, Check, Lock, Plus } from 'lucide-react';
+import { Cpu, Activity, BarChart2, Flame, Share2, Check, Lock, Plus, Wallet } from 'lucide-react';
 
 interface ArenaAppProps {
   roomId: string;
@@ -209,6 +209,40 @@ export const ArenaApp: React.FC<ArenaAppProps> = ({
         </div>
 
       </div>
+
+      {/* Strict Wallet Authentication Gate Modal */}
+      {(!activeProfile || !activeProfile.isConnected) && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="neo-card p-8 max-w-md w-full text-center flex flex-col items-center gap-5 border-[4px] border-black shadow-[10px_10px_0px_#000000]">
+            <div className="w-16 h-16 bg-[#FFE600] border-[3px] border-black flex items-center justify-center text-black shadow-[4px_4px_0px_#000000]">
+              <Lock size={32} />
+            </div>
+            <div>
+              <h2 className="text-2xl font-black font-sans uppercase text-theme-main tracking-tight">
+                WALLET LOGIN REQUIRED
+              </h2>
+              <p className="font-mono text-xs text-theme-muted font-bold mt-2 leading-relaxed">
+                You must connect an authenticated Solana Devnet wallet (Phantom, Solflare, Backpack, or Instant Burner keypair) to enter the CursorClash Trading Arena.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 w-full">
+              <button
+                onClick={onOpenWalletModal}
+                className="neo-btn neo-btn-lg neo-btn-green w-full py-3 flex items-center justify-center gap-2 font-black text-sm shadow-[4px_4px_0px_#000000]"
+              >
+                <Wallet size={18} />
+                <span>CONNECT WALLET TO ENTER ARENA</span>
+              </button>
+              <button
+                onClick={() => window.location.href = '/'}
+                className="neo-btn neo-btn-sm neo-btn-dark w-full py-2 font-bold text-xs"
+              >
+                <span>RETURN TO HOMEPAGE</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

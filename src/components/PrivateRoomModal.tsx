@@ -24,6 +24,30 @@ export const PrivateRoomModal: React.FC<PrivateRoomModalProps> = ({
 
   if (!isOpen) return null;
 
+  if (!activeProfile || !activeProfile.isConnected) {
+    return (
+      <div className="fixed inset-0 bg-black/65 backdrop-blur-2xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-100">
+        <div className="neo-card p-6 w-full max-w-md shadow-[8px_8px_0px_#000000] text-center flex flex-col items-center gap-4">
+          <div className="w-12 h-12 bg-[#FFE600] border-2 border-black flex items-center justify-center text-black shadow-[2px_2px_0px_#000000]">
+            <Lock size={24} />
+          </div>
+          <h3 className="text-xl font-black text-theme-main font-sans uppercase">
+            WALLET LOGIN REQUIRED
+          </h3>
+          <p className="font-mono text-xs text-theme-muted font-bold">
+            You must connect your Solana Devnet wallet before creating a private squad arena.
+          </p>
+          <button
+            onClick={onClose}
+            className="neo-btn neo-btn-green py-2.5 px-5 font-black text-xs shadow-[3px_3px_0px_#000000]"
+          >
+            CLOSE & CONNECT WALLET
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!roomName.trim()) return;

@@ -112,7 +112,13 @@ export const Homepage: React.FC<HomepageProps> = ({
           {/* Action CTAs */}
           <div className="flex items-center gap-4 flex-wrap pt-3">
             <button
-              onClick={() => onEnterArena('trench-1')}
+              onClick={() => {
+                if (!activeProfile || !activeProfile.isConnected) {
+                  onOpenWalletModal();
+                } else {
+                  onEnterArena('trench-1');
+                }
+              }}
               className="neo-btn neo-btn-lg neo-btn-green flex items-center gap-3 text-base sm:text-lg font-black shadow-[6px_6px_0px_#000000]"
             >
               <Play size={20} className="fill-black" />
@@ -121,7 +127,13 @@ export const Homepage: React.FC<HomepageProps> = ({
             </button>
 
             <button
-              onClick={onOpenPrivateRoomModal}
+              onClick={() => {
+                if (!activeProfile || !activeProfile.isConnected) {
+                  onOpenWalletModal();
+                } else {
+                  onOpenPrivateRoomModal();
+                }
+              }}
               className="neo-btn neo-btn-lg neo-btn-dark flex items-center gap-2.5 text-sm sm:text-base font-bold shadow-[4px_4px_0px_#000000]"
             >
               <Lock size={18} />
@@ -213,7 +225,13 @@ export const Homepage: React.FC<HomepageProps> = ({
 
             <div className="flex items-center gap-2">
               <button
-                onClick={onOpenPrivateRoomModal}
+                onClick={() => {
+                  if (!activeProfile || !activeProfile.isConnected) {
+                    onOpenWalletModal();
+                  } else {
+                    onOpenPrivateRoomModal();
+                  }
+                }}
                 className="neo-btn neo-btn-sm neo-btn-green py-2 px-3 flex items-center gap-1.5 text-xs font-black"
               >
                 <Plus size={14} />
@@ -266,7 +284,13 @@ export const Homepage: React.FC<HomepageProps> = ({
                 </div>
 
                 <button
-                  onClick={() => onEnterArena(room.id)}
+                  onClick={() => {
+                    if (!activeProfile || !activeProfile.isConnected) {
+                      onOpenWalletModal();
+                    } else {
+                      onEnterArena(room.id);
+                    }
+                  }}
                   className="w-full neo-btn neo-btn-green py-2.5 flex items-center justify-center gap-2 font-black text-xs shadow-[3px_3px_0px_#000000]"
                 >
                   <span>JOIN ARENA</span>

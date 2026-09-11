@@ -17,6 +17,8 @@ export function AppContent() {
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
   const [isPrivateRoomModalOpen, setIsPrivateRoomModalOpen] = useState(false);
 
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+
   useEffect(() => {
     const unsub = solanaWalletService.subscribe(setActiveProfile);
 
@@ -26,17 +28,54 @@ export function AppContent() {
     if (roomParam) {
       setSelectedRoomId(roomParam);
       multiplayerService.setRoom(roomParam);
-      setCurrentView('ARENA');
+      if (solanaWalletService.getProfile()?.isConnected) {
+        setCurrentView('ARENA');
+      } else {
+        setPendingRoomId(roomParam);
+        setIsWalletModalOpen(true);
+      }
     }
 
     return () => unsub();
   }, []);
 
+  // When user successfully connects wallet, auto-enter pending room if one was requested
+  useEffect(() => {
+    if (activeProfile?.isConnected && pendingRoomId) {
+      const room = pendingRoomId;
+      setPendingRoomId(null);
+      setSelectedRoomId(room);
+      multiplayerService.setRoom(room);
+      setCurrentView('ARENA');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [activeProfile, pendingRoomId]);
+
+  // If user disconnects wallet while in arena, redirect back to homepage
+  useEffect(() => {
+    if (!activeProfile?.isConnected && currentView === 'ARENA') {
+      setCurrentView('HOMEPAGE');
+    }
+  }, [activeProfile, currentView]);
+
   const handleEnterArena = (roomId: string) => {
+    if (!activeProfile?.isConnected) {
+      setPendingRoomId(roomId);
+      setIsWalletModalOpen(true);
+      return;
+    }
     setSelectedRoomId(roomId);
     multiplayerService.setRoom(roomId);
     setCurrentView('ARENA');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleOpenPrivateRoom = () => {
+    if (!activeProfile?.isConnected) {
+      setIsWalletModalOpen(true);
+      return;
+    }
+    setIsPrivateRoomModalOpen(true);
   };
 
   return (
@@ -44,7 +83,13 @@ export function AppContent() {
       {/* Navigation Bar with Live Wallet State and Telemetry */}
       <Navbar
         currentView={currentView}
-        onNavigate={setCurrentView}
+        onNavigate={(view) => {
+          if (view === 'ARENA' && !activeProfile?.isConnected) {
+            setIsWalletModalOpen(true);
+            return;
+          }
+          setCurrentView(view);
+        }}
         onOpenTelemetry={() => setIsTelemetryOpen(true)}
         onOpenWalletModal={() => setIsWalletModalOpen(true)}
       />
@@ -56,7 +101,7 @@ export function AppContent() {
             onEnterArena={handleEnterArena}
             activeProfile={activeProfile}
             onOpenWalletModal={() => setIsWalletModalOpen(true)}
-            onOpenPrivateRoomModal={() => setIsPrivateRoomModalOpen(true)}
+            onOpenPrivateRoomModal={handleOpenPrivateRoom}
           />
         ) : (
           <ArenaApp
